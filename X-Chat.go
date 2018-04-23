@@ -14,6 +14,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"time"
 )
 
 var (
@@ -34,6 +35,7 @@ func main() {
 			return
 		}
 		go TerminalInput()
+		go server.checkClientsIfAlive()
 		server.Accept()
 	} else {
 		err = client.Dial()
@@ -41,7 +43,9 @@ func main() {
 			Log(err)
 			return
 		}
+		defer client.Connected.Close()
 		go TerminalInput()
+		go client.beatHeart()
 		client.ReadMsg()
 	}
 }
@@ -67,7 +71,7 @@ func _init_() {
 		Runtime.Mode = 0
 		server.IP = net.IPv4zero
 		server.Port = BindingPort
-		server.Connects = make(map[string]*net.TCPConn, 1)
+		server.Connects = make(map[string]Client, 1)
 		Self.Role = 0
 	} else {
 		Runtime.Mode = 1
@@ -79,6 +83,7 @@ func _init_() {
 			PORT = args[1]
 		}
 		client.RemoteAddr, err = net.ResolveTCPAddr("tcp", HOST+":"+PORT)
+		client.LastActive = time.Now().Unix()
 		if err != nil {
 			log.Fatalln(err)
 		}
@@ -101,5 +106,4 @@ func createUser() {
 	Self.IP = ":1"
 	fmt.Printf("\033[%dA\r", 1)
 	fmt.Printf("\n*********** \033[32mHello, \033[35m" + string(line) + "\033[32m! Thank you for using X-Chat!\033[37m**************\n")
-
 }

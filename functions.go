@@ -12,32 +12,41 @@ import (
 	"time"
 )
 
+//User 用户信息
 type User struct {
 	Name string
 	IP   string
 	Role uint8
 }
 
+//Server 服务器信息
 type Server struct {
 	IP       net.IP
 	Port     string
 	Listener *net.TCPListener
-	Connects map[string]*net.TCPConn
+	Connects map[string]Client
 }
+
+//Client 客户端信息
 type Client struct {
 	RemoteAddr *net.TCPAddr
 	Connected  *net.TCPConn
+	LastActive int64
 }
+
+//Message 消息结构体
 type Message struct {
 	Type    int
 	User    User
 	Payload []byte
 }
 
+//运行时环境
 type RunTime struct {
 	Mode uint8
 }
 
+//BindAndListen 服务器端绑定与监听端口
 func (Svr *Server) BindAndListen() error {
 	tcpAddr, err := net.ResolveTCPAddr("tcp", Svr.IP.String()+":"+Svr.Port)
 	if err != nil {
@@ -47,6 +56,7 @@ func (Svr *Server) BindAndListen() error {
 	return err
 }
 
+//Accept
 func (Svr *Server) Accept() {
 	for {
 		tcpConn, err := Svr.Listener.AcceptTCP()
@@ -54,7 +64,10 @@ func (Svr *Server) Accept() {
 			Log(err)
 			continue
 		}
-		Svr.Connects[tcpConn.RemoteAddr().String()] = tcpConn
+		raddr, _ := net.ResolveTCPAddr("tcp", tcpConn.RemoteAddr().String())
+		var nclient = Client{raddr, tcpConn, time.Now().Unix()}
+		Svr.Connects[tcpConn.RemoteAddr().String()] = nclient
+
 		SendAckMsg(tcpConn)
 		go ReadMsgThread(tcpConn)
 	}
@@ -62,8 +75,8 @@ func (Svr *Server) Accept() {
 
 func (Svr *Server) SendToMultiClient(Msg Message) {
 	if len(Svr.Connects) > 0 {
-		for _, conn := range Svr.Connects {
-			Msg.Send(conn)
+		for _, client1 := range Svr.Connects {
+			Msg.Send(client1.Connected)
 		}
 	}
 }
@@ -121,6 +134,7 @@ func (client *Client) Dial() error {
 	}
 	return nil
 }
+
 func (client *Client) ReadMsg() {
 	for {
 		var Msg Message
@@ -128,13 +142,7 @@ func (client *Client) ReadMsg() {
 		if err != nil {
 			break
 		}
-		if Msg.Type == 0 {
-			if Msg.User.IP != Self.IP {
-				Msg.Print(false)
-			}
-		} else if Msg.Type == 1 {
-			Self.IP = string(Msg.Payload)
-		}
+		MsgHandler(&Msg)
 	}
 }
 
@@ -161,15 +169,6 @@ func TerminalInput() {
 	}
 }
 
-func (Msg Message) sizeOf() int {
-	var size int
-	size += len(Msg.User.Name)
-	size += len(Msg.User.IP)
-	size += 1
-	size += len(Msg.Payload)
-	return size
-}
-
 func Log(err error) {
 	fmt.Println(err)
 	debug.PrintStack()
@@ -184,10 +183,7 @@ func ReadMsgThread(conn *net.TCPConn) {
 			delete(server.Connects, conn.RemoteAddr().String())
 			continue
 		}
-		if Msg.User.IP != Self.IP {
-			Msg.Print(false)
-		}
-		server.SendToMultiClient(Msg)
+		MsgHandler(&Msg)
 	}
 }
 
@@ -196,4 +192,52 @@ func SendAckMsg(conn *net.TCPConn) {
 	Addr := conn.RemoteAddr().String()
 	Msg.Pack(1, Self, []byte(Addr))
 	Msg.Send(conn)
+
+	var Msg1 Message
+	num := fmt.Sprintf("%d", len(server.Connects))
+	Msg1.Pack(3, Self, []byte(num))
+	Msg1.Send(conn)
+}
+
+func (client *Client) beatHeart() {
+	var Msg Message
+	Msg.Pack(2, Self, nil)
+	for {
+		time.Sleep(time.Minute * 1)
+		Msg.Send(client.Connected)
+	}
+}
+
+func MsgHandler(Msg *Message) {
+	switch Msg.Type {
+	case 0: //正常消息
+		if Msg.User.IP != Self.IP {
+			Msg.Print(false)
+		}
+		if Self.Role == 0 {
+			server.SendToMultiClient(*Msg)
+		}
+	case 1: //Ack包
+		Self.IP = string(Msg.Payload)
+	case 2: //心跳包
+		var client = server.Connects[Msg.User.IP]
+		client.LastActive = time.Now().Unix()
+		server.Connects[Msg.User.IP] = client
+	case 3: //统计数据
+		fmt.Printf("\nNow we have %d people in connected!\n", Msg.Payload)
+	}
+}
+
+func (Svr *Server) checkClientsIfAlive() {
+	var now int64
+	for {
+		time.Sleep(time.Minute * 2)
+		now = time.Now().Unix()
+		for k, client := range Svr.Connects {
+			if (now - client.LastActive) > 2*60 {
+				client.Connected.Close()
+				delete(Svr.Connects, k)
+			}
+		}
+	}
 }
