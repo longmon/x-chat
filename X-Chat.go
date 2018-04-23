@@ -51,12 +51,12 @@ func _init_() {
 	var HOST string
 	var PORT string
 	if len(os.Args) < 2 {
-		fmt.Println("Usage:\n" + os.Args[0] + " -l port for server\n" + os.Args[0] + " ip port for client\n Link:https://github.com/longmon/X-Chat.git")
+		fmt.Println("Usage:\n" + os.Args[0] + " -l [port] for server\n" + os.Args[0] + " [ip] [port] for client\n\ngithub: https://github.com/longmon/X-Chat.git")
 		os.Exit(1)
 	}
 	if len(os.Args) >= 2 && os.Args[1] == "help" {
-		fmt.Println("Usage:\n" + os.Args[0] + " -l port for server\n" + os.Args[0] + " ip port for client\n Link:https://github.com/longmon/X-Chat.git")
-		return
+		fmt.Println("Usage:\n" + os.Args[0] + " -l [port] for server\n" + os.Args[0] + " [ip] [port] for client\n\ngithub: https://github.com/longmon/X-Chat.git")
+		os.Exit(1)
 	}
 	flag.StringVar(&BindingPort, "l", "-1", "binding port of server")
 	flag.StringVar(&HOST, "h", "", "server host")
