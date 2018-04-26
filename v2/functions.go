@@ -1,7 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"net"
+	"os"
+	"runtime/debug"
 )
 
 const DevMode = true
@@ -48,4 +51,37 @@ type Server struct {
 
 type Runtime struct {
 	Mode int8 `Run mode: 1=>client, 2=>server`
+}
+
+func (This *Server) BindAndListen(ip, port string) {
+	tcpAddr, err := net.ResolveTCPAddr("tcp", ip+":"+port)
+	if err != nil {
+		DebugInfo(err)
+		os.Exit(1)
+	}
+	This.Listener, err = net.ListenTCP("tcp", tcpAddr)
+	if err != nil {
+		DebugInfo(err)
+		os.Exit(1)
+	}
+}
+
+func (This *Server) Accept() {
+
+	for {
+		tcpConn, err := This.Listener.AcceptTCP()
+		if err != nil {
+			DebugInfo(err)
+			continue
+		}
+		go TcpConnHandle(tcpConn)
+	}
+}
+
+func TcpConnHandle(conn *net.TCPConn)
+
+func DebugInfo(err error) {
+	fmt.Println(err)
+	fmt.Printf("======================== Call Stack ===================\n")
+	debug.PrintStack()
 }
