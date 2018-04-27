@@ -6,6 +6,8 @@ import (
 	"net"
 	"os"
 	"runtime/debug"
+	"sync"
+	"time"
 )
 
 const DevMode = true
@@ -47,10 +49,11 @@ type ActMsgBody struct {
 type Client struct {
 	User    USER         `User info`
 	Conn    *net.TCPConn `TCP Connection`
-	LastAct int32        `User last active timestamp.Updated by heartbeat`
+	LastAct int64        `User last active timestamp.Updated by heartbeat`
 }
 
 type Server struct {
+	Mutex    sync.RWMutex
 	Clients  map[string]Client `Client list`
 	Listener *net.TCPListener  `TCP listener`
 	IP       net.IP            `Binding ip`
@@ -61,45 +64,63 @@ type Runtime struct {
 	Mode int8 `Run mode: 1=>client, 2=>server`
 }
 
-func (This *Server) bindAndListen(ip, port string) {
+func (Svr *Server) bindAndListen(ip, port string) {
 	tcpAddr, err := net.ResolveTCPAddr("tcp", ip+":"+port)
 	if err != nil {
 		debugInfo(err)
 		os.Exit(1)
 	}
-	This.Listener, err = net.ListenTCP("tcp", tcpAddr)
+	Svr.Listener, err = net.ListenTCP("tcp", tcpAddr)
 	if err != nil {
 		debugInfo(err)
 		os.Exit(1)
 	}
 }
 
-func (This *Server) accept() {
+func (Svr *Server) accept() {
 
 	for {
-		tcpConn, err := This.Listener.AcceptTCP()
+		tcpConn, err := Svr.Listener.AcceptTCP()
 		if err != nil {
 			debugInfo(err)
 			continue
 		}
-		This.sendAck(tcpConn)
-		go tcpConnHandle(tcpConn)
+		Svr.sendAck(tcpConn)
+		go Svr.tcpConnHandle(tcpConn)
 	}
 }
 
-func (This *Server) sendAck(conn *net.TCPConn) {
+func (Svr *Server) sendAck(conn *net.TCPConn) {
 	var actMsg ActMsgBody
 	actMsg.IPPort = []byte(conn.RemoteAddr().String())
-	actMsg.CoNum = len(This.Clients)
+	actMsg.CoNum = len(Svr.Clients)
 
 	var Header MsgHead
 	Header.Typ = 0
 	Header.Blocks = 1
 	Header.BodyLen = len(actMsg.IPPort) + 4
-	Header.Hash = md5.Sum(actMsg.IPPort)
+	hash := md5.Sum(actMsg.IPPort)
+	Header.Hash = hash[:]
+
+	Svr.Send()
 }
 
-func tcpConnHandle(conn *net.TCPConn) {
+func (Svr *Server) addConnectedClient(conn *net.TCPConn) {
+	ipport := conn.RemoteAddr().String()
+	var User = USER{[]byte("::1"), []byte(ipport)}
+	var c = Client{User, conn, time.Now().Unix()}
+	Svr.Mutex.Lock()
+	Svr.Clients[ipport] = c
+	Svr.Mutex.Unlock()
+}
+
+func (Svr *Server) removeConnectedClient(ipport string) {
+	Svr.Mutex.Lock()
+	delete(Svr.Clients, ipport)
+	Svr.Mutex.Unlock()
+}
+
+func (Svr *Server) tcpConnHandle(conn *net.TCPConn) {
 
 }
 
