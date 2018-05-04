@@ -69,26 +69,15 @@ type Server struct {
 	Mutex    sync.RWMutex
 	Clients  map[string]Client `Client list`
 	Listener *net.TCPListener  `TCP listener`
-	IP       net.IP            `Binding ip`
-	Port     string            `Binding port`
+	TCPAddr  *net.TCPAddr      `TCP Addr`
 }
 
 type runtime struct {
 	Mode int8 `Run mode: 1=>client, 2=>server`
 }
 
-var (
-	Self    USER
-	Runtime runtime
-)
-
-func (Svr *Server) bindAndListen(ip, port string) {
-	tcpAddr, err := net.ResolveTCPAddr("tcp", ip+":"+port)
-	if err != nil {
-		debugInfo(err)
-		os.Exit(1)
-	}
-	Svr.Listener, err = net.ListenTCP("tcp", tcpAddr)
+func (Svr *Server) bindAndListen() {
+	Svr.Listener, err = net.ListenTCP("tcp", Svr.TCPAddr)
 	if err != nil {
 		debugInfo(err)
 		os.Exit(1)
@@ -182,7 +171,7 @@ func (Svr *Server) readMsg(conn *net.TCPConn) {
 		case ACK_MSG_TYPE:
 			Self.handleAckBody(boyd)
 		case TEXT_MSG_TYPE:
-				//todo
+			//todo
 		}
 	}
 }
@@ -220,7 +209,7 @@ func handleMsgHeader(conn *net.TCPConn) (*MsgHead, error) {
 	return &header, nil
 }
 
-func (Self *USER) handleAckBody(body []byte) {
+func (client *Client) handleAckBody(body []byte) {
 	CoNum := binary.LittleEndian.Uint16(body[:1])
 	Self.IPPort = body[2:]
 	fmt.Printf("============= Connected:%d===============", CoNum)
