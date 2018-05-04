@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package message;
+
+message MsgHead{
+    uint32 Typ = 1;
+    uint32 BodyLen = 2;
+    uint32 Blocks = 3;
+    bytes  Hash = 4;
+}
+
+message AckMsg{
+    bytes IPPort = 1;
+    uint32 ClientsNum = 2;
+}
+
+message BlockMsg{
+    uint32 BlocksNo = 1;
+    bytes  Payload = 2;
+}
+
+message MessageB{
+    MsgHead Head = 1;
+    BlockMsg Body = 2;
+}
