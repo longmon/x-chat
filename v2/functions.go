@@ -1,11 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/md5"
-	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/golang/protobuf/proto"
 	"net"
 	"os"
 	"runtime/debug"
@@ -13,10 +14,14 @@ import (
 	"time"
 )
 
+/**
+ * MsgHead.Typ: 0 MsgAck, 1 MsgText, 2 MsgFile
+ */
+
 const DevMode = true
 
 //Max block size
-const MAX_BLOCK_SIZE = 2 << 20
+const MAX_BLOCK_SIZE = 1 << 13
 
 const (
 	ACK_MSG_TYPE = iota
@@ -26,43 +31,13 @@ const (
 	FILE_MSG_TYPE
 )
 
-//USER User Info
-type USER struct {
-	Name   []byte
-	IPPort []byte
-}
-
-const MSG_HEAD_SIZE = 33
-
-//MsgHead Message header sizeof 33byte
-type MsgHead struct {
-	Typ     uint8    `Message type: 0=>ack,1=>text,2=>file`
-	Blocks  uint16   `Number of message blocks`
-	BodyLen int      `Length of message`
-	Hash    [16]byte `Hash string of message`
-}
-
-//MsgBlock
-type MsgBlock struct {
-	BlockNo uint16 `Block number`
-	Payload []byte `File block buffer`
-}
-
-type Message struct {
-	Head MsgHead
-	Body MsgBlock
-}
-
-//ActMsgBody ActMsg
-type ActBody struct {
-	CoNum  uint16 `Numer of Connected client`
-	IPPort []byte `Client connected IP and Port`
-}
+const MSG_HEAD_SIZE = 28
 
 type Client struct {
-	User    USER         `User info`
-	Conn    *net.TCPConn `TCP Connection`
-	LastAct int64        `User last active timestamp.Updated by heartbeat`
+	User       USER         `User info`
+	Conn       *net.TCPConn `TCP Connection`
+	RemoteAddr *net.TCPAddr `Remote addr`
+	LastAct    int64        `User last active timestamp.Updated by heartbeat`
 }
 
 type Server struct {
@@ -85,62 +60,67 @@ func (Svr *Server) bindAndListen() {
 }
 
 func (Svr *Server) accept() {
-
 	for {
 		tcpConn, err := Svr.Listener.AcceptTCP()
 		if err != nil {
 			debugInfo(err)
 			continue
 		}
-		Svr.sendAck(tcpConn)
+		Svr.addConnectedClient(tcpConn)
+		sendAck(tcpConn)
 		go Svr.tcpConnHandle(tcpConn)
 	}
 }
 
-func (Svr *Server) sendAck(conn *net.TCPConn) {
-	var actMsg ActBody
-	actMsg.IPPort = []byte(conn.RemoteAddr().String())
-	actMsg.CoNum = uint16(len(Svr.Clients))
+func sendAck(conn *net.TCPConn) {
+	var ackMsg MsgAck
+	if Runtime.Mode == 0 {
+		ackMsg.IPPort = []byte(conn.RemoteAddr().String())
+		ackMsg.ClientsNum = uint32(len(Svr.Clients))
+	} else {
+		ackMsg.IPPort = client.RemoteAddr.String()
+		ackMsg.ClientsNum = 0
+	}
+
+	ackData, err := proto.Marshal(&ackMsg)
+	if err != nil {
+		return
+	}
 
 	var Header MsgHead
 	Header.Typ = 0
 	Header.Blocks = 1
-	Header.BodyLen = len(actMsg.IPPort) + 4
-	hash := md5.Sum(actMsg.IPPort)
-	Header.Hash = hash
+	Header.BodyLen = uint32(len(ackData))
+	hash := md5.Sum(ackData)
+	Header.Hash = hash[:]
 
-	head := bytes.NewBuffer(nil)
-	binary.Write(head, binary.LittleEndian, Header.Typ)
-	binary.Write(head, binary.LittleEndian, Header.Blocks)
-	binary.Write(head, binary.LittleEndian, Header.BodyLen)
-	binary.Write(head, binary.LittleEndian, Header.Hash)
-	if head.Len() <= 0 {
+	headerData, err := proto.Marshal(&Header)
+	if err != nil {
 		return
 	}
-	n, err := conn.Write(head.Bytes())
+
+	n, err := conn.Write(headerData)
 	if err != nil {
 		debugInfo(err)
 		return
 	}
 	if n > 0 {
-		body := bytes.NewBuffer(nil)
-		binary.Write(body, binary.LittleEndian, actMsg.CoNum)
-		binary.Write(body, binary.LittleEndian, actMsg.IPPort)
-		conn.Write(body.Bytes())
+		conn.Write(ackData)
 	}
 	return
 }
 
 func (Svr *Server) addConnectedClient(conn *net.TCPConn) {
 	ipport := conn.RemoteAddr().String()
-	var User = USER{[]byte("::1"), []byte(ipport)}
-	var c = Client{User, conn, time.Now().Unix()}
+	var User = USER{nil, []byte(ipport)}
+	var c = Client{User, conn, conn.RemoteAddr(), time.Now().Unix()}
 	Svr.Mutex.Lock()
 	Svr.Clients[ipport] = c
 	Svr.Mutex.Unlock()
 }
 
 func (Svr *Server) removeConnectedClient(ipport string) {
+	Svr.Clients[ipport].Conn.Close()
 	Svr.Mutex.Lock()
 	delete(Svr.Clients, ipport)
 	Svr.Mutex.Unlock()
@@ -154,32 +134,51 @@ func (Svr *Server) getConnectedClient(ipport string) Client {
 }
 
 func (Svr *Server) tcpConnHandle(conn *net.TCPConn) {
-
+	for {
+		ReadMsg(conn)
+	}
 }
 
-func (Svr *Server) readMsg(conn *net.TCPConn) {
-	for {
-		header, err := handleMsgHeader(conn)
-		if err != nil {
-			continue
+func ReadMsg(conn *net.TCPConn) {
+	header, err := ReadMsgHeader(conn)
+	if err != nil {
+		return
+	}
+
+	if header.GetBlocks() > 0 {
+		bodyLen := header.BodyLen % MAX_BLOCK_SIZE
+		buffer := bytes.NewBuffer(nil)
+		var boyd []byte
+		var i uint32
+		for i = 0; i < header.Blocks-1; i++ {
+			boyd = ReadMsgBody(conn, MAX_BLOCK_SIZE)
+			if boyd != nil {
+				buffer.Write(boyd)
+			}
 		}
-		boyd := readsizefrom(conn, header.BodyLen)
-		if boyd == nil {
-			continue
+		boyd = ReadMsgBody(conn, bodyLen)
+		if boyd != nil {
+			buffer.Write(boyd)
 		}
+
 		switch header.Typ {
 		case ACK_MSG_TYPE:
-			Self.handleAckBody(boyd)
+			handleAckMsg(buffer.Bytes())
 		case TEXT_MSG_TYPE:
-			//todo
+			handleTextMsg(buffer.Bytes())
+		case FILE_MSG_TYPE:
+			handleFileMsg(buffer.Bytes())
 		}
 	}
 }
 
-func readsizefrom(conn *net.TCPConn, size int) []byte {
+func ReadMsgBody(conn *net.TCPConn, size uint32) []byte {
 	buf := make([]byte, size)
 	n, err := conn.Read(buf)
 	if err != nil {
+		if Runtime.Mode == 0 {
+			server.removeConnectedClient(conn.RemoteAddr().String())
+		}
 		debugInfo(err)
 		return nil
 	}
@@ -189,36 +188,175 @@ func readsizefrom(conn *net.TCPConn, size int) []byte {
 	return nil
 }
 
-func handleMsgHeader(conn *net.TCPConn) (*MsgHead, error) {
+func ReadMsgHeader(conn *net.TCPConn) (header MsgHead, err error) {
 	head := make([]byte, MSG_HEAD_SIZE)
 	n, err := conn.Read(head)
 	if err != nil {
+		if Runtime.Mode == 0 {
+			server.removeConnectedClient(conn.RemoteAddr().String())
+		}
 		debugInfo(err)
-		return nil, err
+		return header, err
 	}
 	if n != MSG_HEAD_SIZE {
-		return nil, errors.New("Error MsgHead size")
+		return header, errors.New("Error MsgHead size")
 	}
-	var header MsgHead
-	header.Typ = uint8(head[0])
-	header.Blocks = binary.LittleEndian.Uint16(head[1:2])
-	header.BodyLen = int(binary.LittleEndian.Uint32(head[2:5]))
-	for k, v := range head[6:] {
-		header.Hash[k] = v
+	err = proto.Unmarshal(head, &header)
+	if err != nil {
+		return header, err
 	}
-	return &header, nil
+	return header, nil
 }
 
-func (client *Client) handleAckBody(body []byte) {
-	CoNum := binary.LittleEndian.Uint16(body[:1])
-	Self.IPPort = body[2:]
+func handleAckMsg(Msg []byte) {
+	var msgAck MsgAck
+	err := proto.Unmarshal(Msg, &msgAck)
+	if err != nil {
+		return
+	}
+	CoNum := msgAck.ClientsNum
+	Self.IPPort = msgAck.IPPort
 	fmt.Printf("============= Connected:%d===============", CoNum)
 }
 
-func (M Message) send(conn *net.TCPConn) {}
+func handleTextMsg(Msg []byte) {
+	var text MsgBody
+	err := proto.Unmarshal(Msg, &text)
+	if err != nil {
+		return
+	}
+	Echoz(text.GetPayload())
+}
+
+func handleFileMsg(Msg []byte) {
+	var fileBuffer FileBody
+
+	err := proto.Unmarshal(Msg, &fileBuffer)
+	if err != nil {
+		return
+	}
+	file := createFile(fileBuffer.FileName)
+	defer file.Close()
+	_, err = file.Write(fileBuffer.Chunked)
+	if err != nil {
+		return
+	}
+	Echoz([]byte("File Saved as ./data/" + fileBuffer.FileName))
+}
+
+func createFile(fileName string) *os.File {
+	var FilePtr *os.File
+	_, err := os.Stat(fileName)
+	if err != nil && err.Error() == os.ErrNotExist.Error() {
+		FilePtr, err = os.Create(fileName)
+		if err != nil {
+			return FilePtr
+		}
+	} else {
+		var fno int
+		for {
+			fno++
+			fileName = fmt.Sprintf("%s_%d", fileName, fno)
+			_, err = os.Stat(fileName)
+			if err != nil && err.Error() == os.ErrNotExist.Error() {
+				break
+			}
+		}
+		FilePtr, err = os.Create(fileName)
+		return FilePtr
+	}
+	return nil
+}
+
+func ReadTerminalStdin() {
+	for {
+		Rd := bufio.NewReader(os.Stdin)
+		line, _, err := Rd.ReadLine()
+		if err != nil {
+			debugInfo(err)
+			break
+		}
+		Echoz(line)
+		if Runtime.Mode == 0 {
+
+		}
+		SendMsg(line)
+	}
+}
+
+func SendMsg(line []byte) {
+	var Msg MessageB
+	var header MsgHead
+	var body MsgBody
+
+	header.Typ = TEXT_MSG_TYPE
+	header.Blocks = 1
+	header.BodyLen = uint32(len(line))
+	md5byte := md5.Sum(line)
+	header.Hash = md5byte[:]
+
+	body.User = Self
+	body.Payload = line
+
+	Msg.Head, err = proto.Marshal(&header)
+	if err != nil {
+		debugInfo(err)
+		return
+	}
+	Msg.Body, err = proto.Marshal(&body)
+	if err != nil {
+		debugInfo(err)
+		return
+	}
+
+	if Runtime.Mode == 0 {
+		for ipport, Rclient := range server.Clients {
+			if err := Msg.Send(Rclient.Conn); err != nil {
+				server.removeConnectedClient(ipport)
+			}
+		}
+	} else {
+		if err := Msg.Send(client.Conn); err != nil {
+			Echoz([]byte("Send Msg error"))
+		}
+	}
+}
+
+func (M MessageB) Send(conn *net.TCPConn) error {
+	n, err := conn.Write(M.Head)
+	if err != nil {
+		debugInfo(err)
+		return err
+	}
+	if n <= 0 {
+		return errors.New("Sent 0 size Msg head")
+	}
+	n, err = conn.Write(M.Body)
+	if err != nil {
+		debugInfo(err)
+		return err
+	}
+	if n <= 0 {
+		return errors.New("Sending 0 size Msg body")
+	}
+	return nil
+}
+
+func (c *Client) connect() {
+	c.Conn, err = net.DialTCP("tcp", nil, c.RemoteAddr)
+	if err != nil {
+		debugInfo(err)
+		os.Exit(-1)
+	}
+
+}
 
 func debugInfo(err error) {
 	fmt.Println(err)
 	fmt.Printf("======================== Call Stack ===================\n")
 	debug.PrintStack()
+}
+
+func Echoz(text []byte) {
+	fmt.Printf("===Recved Message: %s\n", text)
 }

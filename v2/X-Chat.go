@@ -49,7 +49,8 @@ func init() {
 			debugInfo(err)
 			os.Exit(1)
 		}
-		server.Clients = make(map[string]Client, 1)
+		server.Clients = make(map[string]Client, 10)
+		Self.IPPort = []byte(":1:" + BindingPort)
 	} else {
 		Runtime.Mode = 1
 		var args = flag.Args()
@@ -59,14 +60,17 @@ func init() {
 		if PORT == "" && len(args) >= 2 {
 			PORT = args[1]
 		}
-		client.LastAct = time.Now().Unix()
+		client.RemoteAddr, err = net.ResolveTCPAddr(HOST, PORT)
 		if err != nil {
-			log.Fatalln(err)
+			debugInfo(err)
+			os.Exit(-1)
 		}
+		client.LastAct = time.Now().Unix()
 	}
 	if Runtime.Mode != 0 && Runtime.Mode != 1 {
 		log.Fatalln("Rumtime error!")
 	}
+	os.Mkdir("./data", 0655)
 }
 
 func main() {
@@ -76,4 +80,5 @@ func main() {
 	} else {
 
 	}
+	ReadTerminalStdin()
 }
