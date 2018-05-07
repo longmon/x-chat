@@ -6,12 +6,13 @@ import (
 	"crypto/md5"
 	"errors"
 	"fmt"
-	"github.com/golang/protobuf/proto"
 	"net"
 	"os"
 	"runtime/debug"
 	"sync"
 	"time"
+
+	"github.com/golang/protobuf/proto"
 )
 
 /**
@@ -36,7 +37,7 @@ const MSG_HEAD_SIZE = 28
 type Client struct {
 	User       USER         `User info`
 	Conn       *net.TCPConn `TCP Connection`
-	RemoteAddr string       `Remote addr`
+	RemoteAddr *net.TCPAddr `Remote addr`
 	LastAct    int64        `User last active timestamp.Updated by heartbeat`
 }
 
@@ -78,7 +79,7 @@ func sendAck(conn *net.TCPConn) {
 		ackMsg.IPPort = []byte(conn.RemoteAddr().String())
 		ackMsg.ClientsNum = uint32(len(server.Clients))
 	} else {
-		ackMsg.IPPort = []byte(client.RemoteAddr)
+		ackMsg.IPPort = []byte(client.RemoteAddr.String())
 		ackMsg.ClientsNum = 0
 	}
 
@@ -112,8 +113,10 @@ func sendAck(conn *net.TCPConn) {
 
 func (Svr *Server) addConnectedClient(conn *net.TCPConn) {
 	ipport := conn.RemoteAddr().String()
-	var User = USER{Name: nil, IPPort: []byte(ipport)}
-	var c = Client{User, conn, conn.RemoteAddr().String(), time.Now().Unix()}
+	User := USER{Name: nil, IPPort: []byte(ipport)}
+	tcpAddr, _ := net.ResolveTCPAddr(conn.RemoteAddr().Network(), conn.RemoteAddr().String())
+	c := Client{User, conn, tcpAddr, time.Now().Unix()}
+
 	Svr.Mutex.Lock()
 	Svr.Clients[ipport] = c
 	Svr.Mutex.Unlock()
@@ -144,6 +147,8 @@ func ReadMsg(conn *net.TCPConn) {
 	if err != nil {
 		return
 	}
+
+	fmt.Println(header)
 
 	if header.GetBlocks() > 0 {
 		bodyLen := header.BodyLen % MAX_BLOCK_SIZE
@@ -269,7 +274,7 @@ func createFile(fileName string) *os.File {
 	return nil
 }
 
-func ReadTerminalStdin() {
+func TerminalStdin() {
 	for {
 		Rd := bufio.NewReader(os.Stdin)
 		line, _, err := Rd.ReadLine()
@@ -277,11 +282,10 @@ func ReadTerminalStdin() {
 			debugInfo(err)
 			break
 		}
-		Echoz(line)
-		if Runtime.Mode == 0 {
-
+		if len(line) > 0 {
+			Echoz(line)
+			SendMsg(line)
 		}
-		SendMsg(line)
 	}
 }
 
@@ -296,7 +300,7 @@ func SendMsg(line []byte) {
 	md5byte := md5.Sum(line)
 	header.Hash = md5byte[:]
 
-	body.User = Self
+	body.User = &Self
 	body.Payload = line
 
 	Msg.Head, err = proto.Marshal(&header)
@@ -309,7 +313,7 @@ func SendMsg(line []byte) {
 		debugInfo(err)
 		return
 	}
-
+	fmt.Println(Msg)
 	if Runtime.Mode == 0 {
 		for ipport, Rclient := range server.Clients {
 			if err := Msg.Send(Rclient.Conn); err != nil {
@@ -343,13 +347,13 @@ func (M MessageB) Send(conn *net.TCPConn) error {
 	return nil
 }
 
-func (c *Client) connect() {
+func (c *Client) connect() error {
 	c.Conn, err = net.DialTCP("tcp", nil, c.RemoteAddr)
 	if err != nil {
 		debugInfo(err)
-		os.Exit(-1)
+		return err
 	}
-
+	return nil
 }
 
 func debugInfo(err error) {

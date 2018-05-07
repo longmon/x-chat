@@ -50,7 +50,7 @@ func init() {
 			os.Exit(1)
 		}
 		server.Clients = make(map[string]Client, 10)
-		Self.IPPort = []byte(":1:" + BindingPort)
+		Self.IPPort = []byte(":" + BindingPort)
 	} else {
 		Runtime.Mode = 1
 		var args = flag.Args()
@@ -60,7 +60,8 @@ func init() {
 		if PORT == "" && len(args) >= 2 {
 			PORT = args[1]
 		}
-		client.RemoteAddr, err = net.ResolveTCPAddr(HOST, PORT)
+
+		client.RemoteAddr, err = net.ResolveTCPAddr("tcp", HOST+":"+PORT)
 		if err != nil {
 			debugInfo(err)
 			os.Exit(-1)
@@ -75,10 +76,18 @@ func init() {
 
 func main() {
 	if Runtime.Mode == 0 {
-		server.bindAndListen()
-		go server.accept()
-	} else {
 
+		server.bindAndListen()
+		go TerminalStdin()
+		server.accept()
+	} else {
+		err = client.connect()
+		if err != nil {
+			os.Exit(-1)
+		}
+		fmt.Println(client)
+		go ReadMsg(client.Conn)
+		TerminalStdin()
 	}
-	ReadTerminalStdin()
+
 }

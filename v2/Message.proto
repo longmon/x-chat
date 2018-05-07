@@ -20,10 +20,7 @@ message MsgAck{
 }
 
 message MsgBody{
-    message   USER{
-        bytes Name = 1;
-        bytes IPPort = 2;
-    };
+    USER   User = 1;
     bytes  Payload = 2;
 }
 
