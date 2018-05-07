@@ -36,7 +36,7 @@ const MSG_HEAD_SIZE = 28
 type Client struct {
 	User       USER         `User info`
 	Conn       *net.TCPConn `TCP Connection`
-	RemoteAddr *net.TCPAddr `Remote addr`
+	RemoteAddr string       `Remote addr`
 	LastAct    int64        `User last active timestamp.Updated by heartbeat`
 }
 
@@ -76,9 +76,9 @@ func sendAck(conn *net.TCPConn) {
 	var ackMsg MsgAck
 	if Runtime.Mode == 0 {
 		ackMsg.IPPort = []byte(conn.RemoteAddr().String())
-		ackMsg.ClientsNum = uint32(len(Svr.Clients))
+		ackMsg.ClientsNum = uint32(len(server.Clients))
 	} else {
-		ackMsg.IPPort = client.RemoteAddr.String()
+		ackMsg.IPPort = []byte(client.RemoteAddr)
 		ackMsg.ClientsNum = 0
 	}
 
@@ -112,8 +112,8 @@ func sendAck(conn *net.TCPConn) {
 
 func (Svr *Server) addConnectedClient(conn *net.TCPConn) {
 	ipport := conn.RemoteAddr().String()
-	var User = USER{nil, []byte(ipport)}
-	var c = Client{User, conn, conn.RemoteAddr(), time.Now().Unix()}
+	var User = USER{Name: nil, IPPort: []byte(ipport)}
+	var c = Client{User, conn, conn.RemoteAddr().String(), time.Now().Unix()}
 	Svr.Mutex.Lock()
 	Svr.Clients[ipport] = c
 	Svr.Mutex.Unlock()
@@ -148,6 +148,7 @@ func ReadMsg(conn *net.TCPConn) {
 	if header.GetBlocks() > 0 {
 		bodyLen := header.BodyLen % MAX_BLOCK_SIZE
 		buffer := bytes.NewBuffer(nil)
+		buffer.Grow(int(header.BodyLen)) //先预申请内存，避免重复扩展
 		var boyd []byte
 		var i uint32
 		for i = 0; i < header.Blocks-1; i++ {
