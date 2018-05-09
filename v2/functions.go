@@ -69,7 +69,7 @@ func (Svr *Server) accept() {
 		}
 		Svr.addConnectedClient(tcpConn)
 		sendAck(tcpConn)
-		go Svr.tcpConnHandle(tcpConn)
+		go Svr.tcpConnHandle(*tcpConn)
 	}
 }
 
@@ -136,19 +136,20 @@ func (Svr *Server) getConnectedClient(ipport string) Client {
 	return client
 }
 
-func (Svr *Server) tcpConnHandle(conn *net.TCPConn) {
+func (Svr *Server) tcpConnHandle(conn net.TCPConn) {
 	for {
-		ReadMsg(conn)
+		ReadMsg(&conn)
 	}
 }
 
 func ReadMsg(conn *net.TCPConn) {
+	
 	header, err := ReadMsgHeader(conn)
 	if err != nil {
 		return
 	}
 
-	fmt.Println(header)
+	fmt.Printf("read msg head:%s\n",header)
 
 	if header.GetBlocks() > 0 {
 		bodyLen := header.BodyLen % MAX_BLOCK_SIZE
@@ -166,7 +167,7 @@ func ReadMsg(conn *net.TCPConn) {
 		if boyd != nil {
 			buffer.Write(boyd)
 		}
-
+		fmt.Println(buffer)
 		switch header.Typ {
 		case ACK_MSG_TYPE:
 			handleAckMsg(buffer.Bytes())
@@ -313,7 +314,6 @@ func SendMsg(line []byte) {
 		debugInfo(err)
 		return
 	}
-	fmt.Println(Msg)
 	if Runtime.Mode == 0 {
 		for ipport, Rclient := range server.Clients {
 			if err := Msg.Send(Rclient.Conn); err != nil {
@@ -329,6 +329,7 @@ func SendMsg(line []byte) {
 
 func (M MessageB) Send(conn *net.TCPConn) error {
 	n, err := conn.Write(M.Head)
+	fmt.Printf("sending head data:%s\n", M.Head)
 	if err != nil {
 		debugInfo(err)
 		return err
@@ -336,6 +337,7 @@ func (M MessageB) Send(conn *net.TCPConn) error {
 	if n <= 0 {
 		return errors.New("Sent 0 size Msg head")
 	}
+	fmt.Printf("sending body data:%s\n", M.Body)
 	n, err = conn.Write(M.Body)
 	if err != nil {
 		debugInfo(err)

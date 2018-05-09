@@ -76,7 +76,6 @@ func init() {
 
 func main() {
 	if Runtime.Mode == 0 {
-
 		server.bindAndListen()
 		go TerminalStdin()
 		server.accept()
