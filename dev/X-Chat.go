@@ -12,7 +12,6 @@ import (
 	"bufio"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"time"
 )
@@ -37,7 +36,7 @@ func init() {
 
 		//服务器角色
 		Runtime.Mode = 0
-		Server.TCPAddr, err = net.ResolveTCPAddr("tcp", ":"+BindingPort)
+		Server.Addr = ":" + BindingPort
 		if err != nil {
 			debugLog(err)
 			os.Exit(1)
@@ -49,11 +48,7 @@ func init() {
 		if len(os.Args) > 2 {
 			RemoteHost := os.Args[1]
 			RemotePort := os.Args[2]
-			Client.RemoteAddr, err = net.ResolveTCPAddr("tcp", RemoteHost+":"+RemotePort)
-			if err != nil {
-				debugLog(err)
-				os.Exit(-1)
-			}
+			Client.RemoteAddr = RemoteHost + ":" + RemotePort
 		}
 		Client.LastAct = time.Now().Unix()
 	}
@@ -69,13 +64,19 @@ func main() {
 	signup()
 
 	if Runtime.Mode == 0 {
+		readyToSaid()
 		go terminalInput()
 		Server.bindAndListen()
 		Server.accept()
 	} else {
-		err := Client.Dial()
+		err = Client.Dial()
+		if err != nil {
+			debugLog(err)
+			os.Exit(-1)
+		}
+		go Client.recvConnect()
+		terminalInput()
 	}
-
 }
 
 func help() {
@@ -93,5 +94,5 @@ func signup() {
 	Self.Name = name
 	Self.IPPort = []byte(":1")
 	fmt.Printf("\033[%dA\033[K", 1)
-	fmt.Printf("\n*********** \033[32mHello, \033[35m%s\033[32m! Thank you for using X-Chat!\033[37m**************\n", name)
+	fmt.Printf("\n*********** \033[32mHello, \033[1m\033[36m\033[4m%s\033[0m\033[32m! Thank you for using X-Chat!\033[0m**************\n", name)
 }

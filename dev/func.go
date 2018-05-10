@@ -19,7 +19,9 @@ import (
 const MAX_BLOCK_SIZE = 1 << 13
 
 const (
-	ACK_MSG_TYPE = iota
+	UNKNOW_MSG_TYPE = iota //注意，不要使用这个类型，会导致HEAD的长度不是24从而读取错误
+
+	ACK_MSG_TYPE
 
 	TEXT_MSG_TYPE
 
@@ -28,19 +30,19 @@ const (
 	SHELL_MSG_TYPE
 )
 
-const MSG_HEAD_SIZE = 28
+const MSG_HEAD_SIZE = 24
 
 type client struct {
 	User       *USER
-	Conn       *net.TCPConn
-	RemoteAddr *net.TCPAddr
+	Conn       net.Conn
+	RemoteAddr string
 	LastAct    int64
 }
 type server struct {
-	TCPAddr  *net.TCPAddr
+	Addr     string
 	Mutex    sync.RWMutex
 	Clients  map[string]client
-	Listener *net.TCPListener
+	Listener net.Listener
 }
 
 type runtime struct {
@@ -73,12 +75,6 @@ func debugLog(err error) {
 	debug.PrintStack()
 }
 
-func iSaid(line []byte) {
-	fmt.Printf("\033[%dA\033[K", 1)
-	now := time.Now().Format("2006-01-02 15:04:05")
-	fmt.Printf("\n[\033[36m%s \033[0m@%s Said]:\n  %s\n", Self.Name, now, line)
-}
-
 func sendto(line []byte) {
 	var body MsgBody
 	body.User = &Self
@@ -91,7 +87,7 @@ func sendto(line []byte) {
 	}
 
 	var header MsgHead
-	header.Typ = 1
+	header.Typ = TEXT_MSG_TYPE
 	header.Blocks = 1
 	header.BodyLen = uint32(len(bodyData))
 	md5string := md5.Sum(bodyData)
@@ -101,13 +97,30 @@ func sendto(line []byte) {
 
 	Msg := MessageB{Head: headerData, Body: bodyData}
 
-	Msg.send()
+	Msg.send(string(Self.IPPort))
 	return
 }
 
-func (Msg MessageB) send() {
+func (Svr *server) BroadCast(body []byte, unexpected string) {
+	var header MsgHead
+	header.Typ = TEXT_MSG_TYPE
+	header.Blocks = 1
+	header.BodyLen = uint32(len(body))
+	md5string := md5.Sum(body)
+	header.Hash = md5string[:]
+
+	headerData, _ := proto.Marshal(&header)
+	Msg := MessageB{Head: headerData, Body: body}
+
+	Msg.send(unexpected)
+}
+
+func (Msg MessageB) send(sender string) {
 	if Runtime.Mode == 0 {
 		for ipport, c := range Server.Clients {
+			if ipport == sender {
+				continue
+			}
 			n, err := c.Conn.Write(Msg.Head)
 			if err != nil {
 				debugLog(err)
@@ -125,7 +138,13 @@ func (Msg MessageB) send() {
 			}
 		}
 	} else {
-
+		n, err := Client.Conn.Write(Msg.Head)
+		if err != nil {
+			debugLog(err)
+		}
+		if n > 0 {
+			Client.Conn.Write(Msg.Body)
+		}
 	}
 }
 
@@ -152,7 +171,7 @@ func (Svr *server) getClient(key string) *client {
 }
 
 func (Svr *server) bindAndListen() error {
-	Svr.Listener, err = net.ListenTCP("tcp", Svr.TCPAddr)
+	Svr.Listener, err = net.Listen("tcp", Svr.Addr)
 	if err != nil {
 		debugLog(err)
 		return err
@@ -162,26 +181,26 @@ func (Svr *server) bindAndListen() error {
 
 func (Svr *server) accept() {
 	for {
-		tcpConn, err := Svr.Listener.AcceptTCP()
+		tcpConn, err := Svr.Listener.Accept()
 		if err != nil {
 			debugLog(err)
 			os.Exit(-1)
 		}
-		raddr, _ := net.ResolveTCPAddr("tcp", tcpConn.RemoteAddr().String())
+		raddr := tcpConn.RemoteAddr().String()
 		remoteClient := client{User: nil, Conn: tcpConn, RemoteAddr: raddr, LastAct: time.Now().Unix()}
-		Svr.Clients[tcpConn.RemoteAddr().String()] = remoteClient
+		Svr.Clients[raddr] = remoteClient
 
-		sendAck(tcpConn)
+		sendAck(&tcpConn)
 
-		go handleAcceptConn(tcpConn)
+		go Svr.handleAcceptConn(&tcpConn)
 	}
 }
 
-func sendAck(conn *net.TCPConn) {
+func sendAck(conn *net.Conn) {
 	var header MsgHead
 	var ack MsgAck
 
-	raddrString := conn.RemoteAddr().String()
+	raddrString := (*conn).RemoteAddr().String()
 
 	ack.IPPort = []byte(raddrString)
 	if Runtime.Mode == 0 {
@@ -195,7 +214,7 @@ func sendAck(conn *net.TCPConn) {
 		return
 	}
 
-	header.Typ = 0
+	header.Typ = ACK_MSG_TYPE
 	header.BodyLen = uint32(len(ackBytes))
 	header.Blocks = 1
 	md5s := md5.Sum(ackBytes)
@@ -207,7 +226,7 @@ func sendAck(conn *net.TCPConn) {
 		debugLog(err)
 		return
 	}
-	n, err := conn.Write(headerBytes)
+	n, err := (*conn).Write(headerBytes)
 	if err != nil {
 		debugLog(err)
 		if Runtime.Mode == 0 {
@@ -216,38 +235,53 @@ func sendAck(conn *net.TCPConn) {
 		return
 	}
 	if n > 0 {
-		conn.Write(ackBytes)
+		(*conn).Write(ackBytes)
 	}
 }
 
-func handleAcceptConn(conn *net.TCPConn) {
+func (Svr *server) handleAcceptConn(conn *net.Conn) {
 	for {
-		recvfrom(conn)
+		if err := recvfrom(conn); err != nil {
+			Svr.removeClient((*conn).RemoteAddr().String())
+			debugLog(err)
+			break
+		}
+		//todo:收到消息后还要转发出去的
 	}
 }
 
-func recvfrom(conn *net.TCPConn) {
+func (c *client) recvConnect() {
+	for {
+		if err := recvfrom(&c.Conn); err != nil {
+			debugLog(err)
+			break
+		}
+	}
+}
+
+func recvfrom(conn *net.Conn) error {
 	head, err := readMsgHeader(conn)
 	if err != nil {
-		debugLog(err)
-		return
+		return err
 	}
 
 	if head.Typ == ACK_MSG_TYPE {
-		ackMsgHandle(conn, head.BodyLen)
+		ackMsgHandle(conn, &head)
 	} else if head.Typ == TEXT_MSG_TYPE {
-		textMsgHandle(conn, head.BodyLen)
+		textMsgHandle(conn, &head)
 	} else if head.Typ == FILE_MSG_TYPE {
-		fileMsgHandle(conn, head.BodyLen)
+		fileMsgHandle(conn, &head)
 	} else if head.Typ == SHELL_MSG_TYPE {
-		shellMsgHandle(conn, head.BodyLen)
+		shellMsgHandle(conn, &head)
 	}
+	return nil
 }
 
-func readMsgHeader(conn *net.TCPConn) (head MsgHead, err error) {
+func readMsgHeader(conn *net.Conn) (head MsgHead, err error) {
 
 	buffer := make([]byte, MSG_HEAD_SIZE)
-	n, err := conn.Read(buffer)
+	n, err := (*conn).Read(buffer)
+
 	if err != nil {
 		return
 	}
@@ -262,9 +296,9 @@ func readMsgHeader(conn *net.TCPConn) (head MsgHead, err error) {
 	return
 }
 
-func ackMsgHandle(conn *net.TCPConn, ln uint32) {
-	buffer := make([]byte, ln)
-	n, err := conn.Read(buffer)
+func ackMsgHandle(conn *net.Conn, head *MsgHead) {
+	buffer := make([]byte, int(head.BodyLen))
+	n, err := (*conn).Read(buffer)
 	if err != nil {
 		debugLog(err)
 		return
@@ -275,8 +309,6 @@ func ackMsgHandle(conn *net.TCPConn, ln uint32) {
 	var ack MsgAck
 	err = proto.Unmarshal(buffer, &ack)
 
-	fmt.Println(ack)
-
 	if err != nil {
 		debugLog(err)
 		return
@@ -284,14 +316,14 @@ func ackMsgHandle(conn *net.TCPConn, ln uint32) {
 	Self.IPPort = ack.IPPort
 
 	if Runtime.Mode == 1 {
-		now := time.Now().Format("2006-01-02 15:04:05")
-		fmt.Printf("\n[\033[36mSystem \033[0m@%s Said]:\n  Connected:%d\n", now, ack.ClientsNum)
+		fmt.Printf(" \nCurrent Connected Clients(s): %d\n", ack.ClientsNum)
+		readyToSaid()
 	}
 }
 
-func textMsgHandle(conn *net.TCPConn, ln uint32) {
-	buffer := make([]byte, ln)
-	n, err := conn.Read(buffer)
+func textMsgHandle(conn *net.Conn, head *MsgHead) {
+	buffer := make([]byte, int(head.BodyLen))
+	n, err := (*conn).Read(buffer)
 	if err != nil {
 		debugLog(err)
 		return
@@ -302,18 +334,19 @@ func textMsgHandle(conn *net.TCPConn, ln uint32) {
 	var Text MsgBody
 	err = proto.Unmarshal(buffer, &Text)
 
-	fmt.Println(Text)
-
 	if err != nil {
 		debugLog(err)
 		return
 	}
-
 	rSaid(&Text)
+	if Runtime.Mode == 0 {
+		Server.BroadCast(buffer, string(Text.User.IPPort))
+	}
 
 }
 
-func fileMsgHandle(conn *net.TCPConn, ln uint32) {
+func fileMsgHandle(conn *net.Conn, head *MsgHead) {
+	ln := int(head.BodyLen)
 	Blocks := int(ln/MAX_BLOCK_SIZE) - 1
 	LastBlockSize := ln % MAX_BLOCK_SIZE
 
@@ -321,7 +354,7 @@ func fileMsgHandle(conn *net.TCPConn, ln uint32) {
 	var FileIo fileIO
 	for i := 0; i < Blocks; i++ {
 		b := make([]byte, MAX_BLOCK_SIZE)
-		n, err := conn.Read(b)
+		n, err := (*conn).Read(b)
 		if err != nil {
 			debugLog(err)
 			return
@@ -341,7 +374,7 @@ func fileMsgHandle(conn *net.TCPConn, ln uint32) {
 	}
 
 	b := make([]byte, LastBlockSize)
-	n, err := conn.Read(b)
+	n, err := (*conn).Read(b)
 	if err != nil {
 		debugLog(err)
 		return
@@ -357,15 +390,10 @@ func fileMsgHandle(conn *net.TCPConn, ln uint32) {
 	FileIo.writeFile(&file)
 
 	now := time.Now().Format("2006-01-02 15:04:05")
-	fmt.Printf("\n[\033[36m%System \033[0m@%s Said]:\n  File Saved: ./data/%s\n", now, file.FileName)
+	fmt.Printf("\n[\033[4m\033[1m\033[36mSystem\033[0m @%s Said]:  File Saved: ./data/%s\n", now, file.FileName)
 }
 
-func shellMsgHandle(conn *net.TCPConn, ln uint32) {}
-
-func rSaid(Msg *MsgBody) {
-	now := time.Now().Format("2006-01-02 15:04:05")
-	fmt.Printf("\n[\033[36m%s \033[0m@%s Said]:\n  %s\n", Msg.User.Name, now, Msg.Payload)
-}
+func shellMsgHandle(conn *net.Conn, head *MsgHead) {}
 
 func (fp *fileIO) writeFile(file *FileBody) bool {
 	if fp.Fopen == nil {
@@ -389,4 +417,33 @@ func getAvaiFileName(fileName string) string {
 		i++
 		fileName = fmt.Sprintf("%s_%d", fileName, i)
 	}
+}
+
+func (c *client) Dial() error {
+	Conn, err := net.DialTimeout("tcp", c.RemoteAddr, time.Second*3)
+	if err != nil {
+		return err
+	}
+	c.Conn = Conn
+	return nil
+}
+
+func readyToSaid() {
+	fmt.Printf("\n[\033[4m\033[1m\033[36m%s\033[0m @X-Chat Saying] $ ", Self.Name)
+}
+
+func rSaid(Msg *MsgBody) {
+	fmt.Printf("\033[%dA\033[K", 1)
+	now := time.Now().Format("2006-01-02 15:04:05")
+	fmt.Printf("\n[\033[4m\033[1m\033[33m%s\033[0m @%s Said\033[0m]:\n  %s\n", Msg.User.Name, now, Msg.Payload)
+
+	readyToSaid()
+}
+
+func iSaid(line []byte) {
+	fmt.Printf("\033[%dA\033[K", 1)
+	now := time.Now().Format("2006-01-02 15:04:05")
+	fmt.Printf("[\033[4m\033[1m\033[36m%s\033[0m @%s Said]:\n  %s\n", Self.Name, now, line)
+
+	readyToSaid()
 }
