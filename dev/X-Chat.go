@@ -17,11 +17,13 @@ import (
 )
 
 var (
-	Self    USER
-	Runtime runtime
-	Server  server
-	Client  client
-	err     error
+	Self        USER
+	Runtime     runtime
+	Server      server
+	Client      client
+	err         error
+	MsgBobQueue chan MessageBob
+	FileRecv    chan int
 )
 
 func init() {
@@ -42,6 +44,8 @@ func init() {
 			os.Exit(1)
 		}
 		Server.Clients = make(map[string]client, 10)
+		MsgBobQueue = make(chan MessageBob, 64)
+
 		Self.IPPort = []byte(":" + BindingPort)
 	} else {
 		Runtime.Mode = 1
@@ -66,6 +70,7 @@ func main() {
 	if Runtime.Mode == 0 {
 		readyToSaid()
 		go terminalInput()
+		go Server.BroadCast()
 		Server.bindAndListen()
 		Server.accept()
 	} else {
