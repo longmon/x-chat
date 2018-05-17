@@ -2,10 +2,8 @@ package main
 
 import (
 	"bufio"
-	"crypto/md5"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"regexp"
@@ -17,10 +15,10 @@ import (
 )
 
 //Max block size
-const MAX_BLOCK_SIZE = 1 << 13
+const MAX_BLOCK_SIZE = 1 << 25
 
 const (
-	UNKNOW_MSG_TYPE = iota //注意，不要使用这个类型，会导致HEAD的长度不是24从而读取错误
+	UNKNOW_MSG_TYPE = iota //注意，不要使用这个类型，会导致HEAD的长度不致从而读取错误
 
 	ACK_MSG_TYPE
 
@@ -28,12 +26,22 @@ const (
 
 	FILE_MSG_TYPE
 
-	FILE_TIP_TYPE
+	FILE_PUT_TEMP_TYPE
+
+	FILE_RECV_ACK_TYPE
+
+	FILE_TIP_MSG_TYPE
+
+	FILE_GET_FILE_TYPE
 
 	SHELL_MSG_TYPE
 )
 
-const MSG_HEAD_SIZE = 24
+const MSG_HEAD_SIZE = 15
+
+const TEMP_FILE_DIR = "/tmp/X-Chat-Tmp"
+
+const ARCHIVE_HOLD_PATH = "./data"
 
 type client struct {
 	User       *USER
@@ -54,41 +62,59 @@ type runtime struct {
 
 type fileIO struct {
 	Fopen *os.File
+	FileM
 }
 
 type MessageBob struct {
 	MessageB
-	Sender []byte
+	User USER
 }
 
 var cmd = map[string]func(string) error{
-	`<<\s*([\w.]+)`: SendFile,
+	`<<\s*([\w.]+)`: SendFileToSvr,
+	`>>\s*([\w.]+)`: requestRecvFile,
 }
 
-var Fp *os.File
+var MsgTypeCB = map[uint32]func(*net.Conn, *MsgHead){
+	UNKNOW_MSG_TYPE:    unkownMsgType,
+	ACK_MSG_TYPE:       ackMsgHandle,
+	TEXT_MSG_TYPE:      textMsgHandle,
+	FILE_MSG_TYPE:      fileMsgHandle,
+	FILE_PUT_TEMP_TYPE: filePutTempHandle,
+	FILE_RECV_ACK_TYPE: fileRecvAckHandle,
+	SHELL_MSG_TYPE:     shellMsgHandle,
+	FILE_TIP_MSG_TYPE:  havingFileRecvHandle,
+	FILE_GET_FILE_TYPE: clientGetFileHandle,
+}
+
+var transfferFileList = map[string]FileM{}
 
 func terminalInput() {
 	rd := bufio.NewReader(os.Stdin)
+	var isRegxMatch bool
 	for {
 		line, _, err := rd.ReadLine()
 		if err != nil {
-			log.Println(err)
 			break
 		}
 		if len(line) == 0 {
 			continue
 		}
-
+		isRegxMatch = false
 		for pat, fun := range cmd {
 			regx, _ := regexp.Compile(pat)
 			mat := regx.FindSubmatch(line)
 			if len(mat) > 1 {
+				isRegxMatch = true
 				fun(string(mat[1]))
+				break
 			}
 		}
 
-		//iSaid(line)
-		//sendto(line)
+		if !isRegxMatch {
+			iSaid(line)
+			sendto(line)
+		}
 	}
 }
 
@@ -109,9 +135,7 @@ func sendto(line []byte) {
 		return
 	}
 
-	Msg := PacketMsgBob(bodyData, TEXT_MSG_TYPE)
-
-	MsgBob := MessageBob{Msg, Self.IPPort}
+	MsgBob := PacketMsgBob(bodyData, TEXT_MSG_TYPE)
 
 	if Runtime.Mode == 0 {
 		AddMsgBobQueue(MsgBob)
@@ -134,7 +158,7 @@ func AddMsgBobQueue(MsgBob MessageBob) {
 func (MsgBob MessageBob) Send() {
 	if Runtime.Mode == 0 {
 		for ipport, c := range Server.Clients {
-			if ipport == string(MsgBob.Sender) {
+			if ipport == string(MsgBob.User.IPPort) {
 				continue
 			}
 			n, err := c.Conn.Write(MsgBob.Head)
@@ -162,6 +186,29 @@ func (MsgBob MessageBob) Send() {
 		if n > 0 {
 			Client.Conn.Write(MsgBob.Body)
 		}
+	}
+}
+
+func (MsgBob MessageBob) Sendto(conn *net.Conn) {
+
+	if conn == nil {
+		return
+	}
+	_, err := (*conn).Write(MsgBob.Head)
+	if err != nil {
+		if Runtime.Mode == 0 {
+			Server.removeClient((*conn).RemoteAddr().String())
+		}
+		debugLog(err)
+		return
+	}
+	_, err = (*conn).Write(MsgBob.Body)
+	if err != nil {
+		if Runtime.Mode == 0 {
+			Server.removeClient((*conn).RemoteAddr().String())
+		}
+		debugLog(err)
+		return
 	}
 }
 
@@ -225,6 +272,8 @@ func sendAck(conn *net.Conn) {
 	} else {
 		ack.ClientsNum = 0
 	}
+	ack.Name = Self.Name
+
 	ackBytes, err := proto.Marshal(&ack)
 	if err != nil {
 		debugLog(err)
@@ -234,11 +283,8 @@ func sendAck(conn *net.Conn) {
 	header.Typ = ACK_MSG_TYPE
 	header.BodyLen = uint32(len(ackBytes))
 	header.Blocks = 1
-	md5s := md5.Sum(ackBytes)
-	header.Hash = md5s[:]
 
 	headerBytes, err := proto.Marshal(&header)
-
 	if err != nil {
 		debugLog(err)
 		return
@@ -281,14 +327,8 @@ func recvfrom(conn *net.Conn) error {
 		return err
 	}
 
-	if head.Typ == ACK_MSG_TYPE {
-		ackMsgHandle(conn, &head)
-	} else if head.Typ == TEXT_MSG_TYPE {
-		textMsgHandle(conn, &head)
-	} else if head.Typ == FILE_MSG_TYPE {
-		fileMsgHandle(conn, &head)
-	} else if head.Typ == SHELL_MSG_TYPE {
-		shellMsgHandle(conn, &head)
+	if handler, ok := MsgTypeCB[head.Typ]; ok {
+		handler(conn, &head)
 	}
 	return nil
 }
@@ -301,139 +341,39 @@ func readMsgHeader(conn *net.Conn) (head MsgHead, err error) {
 	if err != nil {
 		return
 	}
-	err = proto.Unmarshal(buffer, &head)
-	if err != nil {
-		return
-	}
+
 	if n != MSG_HEAD_SIZE {
 		err = errors.New("Invalid Header Size")
 		return
 	}
+
+	err = proto.Unmarshal(buffer, &head)
+	if err != nil {
+		return
+	}
+
 	return
 }
 
-func ackMsgHandle(conn *net.Conn, head *MsgHead) {
-	buffer := make([]byte, int(head.BodyLen))
-	n, err := (*conn).Read(buffer)
-	if err != nil {
-		debugLog(err)
-		return
-	}
-	if n <= 0 {
-		return
-	}
-	var ack MsgAck
-	err = proto.Unmarshal(buffer, &ack)
-
-	if err != nil {
-		debugLog(err)
-		return
-	}
-	Self.IPPort = ack.IPPort
-
-	if Runtime.Mode == 1 {
-		fmt.Printf(" \nCurrent Connected Clients(s): %d\n", ack.ClientsNum)
-		readyToSaid()
-	}
-}
-
-func textMsgHandle(conn *net.Conn, head *MsgHead) {
-	buffer := make([]byte, int(head.BodyLen))
-	n, err := (*conn).Read(buffer)
-	if err != nil {
-		debugLog(err)
-		return
-	}
-	if n <= 0 {
-		return
-	}
-	var Text MsgBody
-	err = proto.Unmarshal(buffer, &Text)
-
-	if err != nil {
-		debugLog(err)
-		return
-	}
-	rSaid(&Text)
-	if Runtime.Mode == 0 {
-		Msg := PacketMsgBob(buffer, TEXT_MSG_TYPE)
-		MsgBob := MessageBob{Msg, Text.User.IPPort}
-		AddMsgBobQueue(MsgBob)
-	}
-}
-
-func fileMsgHandle(conn *net.Conn, head *MsgHead) {
-	ln := int(head.BodyLen)
-	Blocks := int(ln/MAX_BLOCK_SIZE) - 1
-	LastBlockSize := ln % MAX_BLOCK_SIZE
-
-	var file FileBody
-	var FileIo fileIO
-	for i := 0; i < Blocks; i++ {
-		b := make([]byte, MAX_BLOCK_SIZE)
-		n, err := (*conn).Read(b)
-		if err != nil {
-			debugLog(err)
-			return
-		}
-		if n <= 0 {
-			continue
-		}
-		err = proto.Unmarshal(b, &file)
-		if err != nil {
-			debugLog(err)
-			return
-		}
-		FileIo.writeFile(&file)
-	}
-	if FileIo.Fopen != nil {
-		defer FileIo.Fopen.Close()
-	}
-
-	b := make([]byte, LastBlockSize)
-	n, err := (*conn).Read(b)
-	if err != nil {
-		debugLog(err)
-		return
-	}
-	if n <= 0 {
-		return
-	}
-	err = proto.Unmarshal(b, &file)
-	if err != nil {
-		debugLog(err)
-		return
-	}
-	FileIo.writeFile(&file)
-
-	now := time.Now().Format("2006-01-02 15:04:05")
-	fmt.Printf("\n[\033[4m\033[1m\033[36mSystem\033[0m @%s Said]:  File Saved: ./data/%s\n", now, file.FileName)
-}
-
-func shellMsgHandle(conn *net.Conn, head *MsgHead) {}
-
-func (fp *fileIO) writeFile(file *FileBody) bool {
+func (fp *fileIO) writeFile(file *FileBody, dir string, rename bool) bool {
 	if fp.Fopen == nil {
-		fileName := getAvaiFileName(file.FileName)
-		fp.Fopen, err = os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0655)
+		if rename {
+			file.FileName = getAvaiFileName(file.FileName)
+		}
+		file.FileName = fmt.Sprintf("%s/%s", dir, file.FileName)
+		fp.Fopen, err = os.OpenFile(file.FileName, os.O_RDWR|os.O_CREATE, 0400)
 		if err != nil {
 			return false
 		}
 	}
+
 	fp.Fopen.Write(file.Chunked)
 	return true
 }
 
 func getAvaiFileName(fileName string) string {
-	var i int
-	for {
-		_, err := os.Stat(fileName)
-		if err != nil && os.IsNotExist(err) {
-			return fileName
-		}
-		i++
-		fileName = fmt.Sprintf("%s_%d", fileName, i)
-	}
+	fileName = fmt.Sprintf("%s_%d", fileName, time.Now().Unix())
+	return fileName
 }
 
 func (c *client) Dial() error {
@@ -443,21 +383,6 @@ func (c *client) Dial() error {
 	}
 	c.Conn = Conn
 	return nil
-}
-
-func PacketMsgBob(body []byte, MsgType uint32) MessageB {
-	var header MsgHead
-	header.Typ = MsgType
-	header.BodyLen = uint32(len(body))
-	header.Blocks = 1
-	hash := md5.Sum(body)
-	header.Hash = hash[:]
-
-	headerData, _ := proto.Marshal(&header)
-
-	MsgBob := MessageB{Head: headerData, Body: body}
-
-	return MsgBob
 }
 
 func readyToSaid() {
@@ -480,58 +405,40 @@ func iSaid(line []byte) {
 	readyToSaid()
 }
 
-func SendFile(file string) error {
-	finfo, err := os.Stat(file)
-	if err != nil && os.IsNotExist(err) {
-		iSaid([]byte("file '" + file + "' dose not exists!"))
-		return err
-	}
-	switch mode := finfo.Mode(); {
-	case mode.IsRegular():
-		sendfile(finfo)
-		iSaid([]byte("File Transffered"))
-	default:
-		iSaid([]byte("file '" + file + "' is not a regular file"))
-		return errors.New("not a regular file")
-	}
-	return nil
+func sysSaid(text string) {
+	fmt.Printf("\033[%dA\033[K", 1)
+	now := time.Now().Format("2006-01-02 15:04:05")
+	fmt.Printf("\n[\033[4m\033[1m\033[35mSystem\033[0m @%s Said]:\n  %s\n", now, text)
+
+	readyToSaid()
 }
 
-func sendfile(finfo os.FileInfo) {
+func PacketMsgBob(body []byte, MsgType uint32) MessageBob {
+	var header MsgHead
+	header.Typ = MsgType
+	header.BodyLen = uint32(len(body))
+	header.Blocks = 1
 
+	headerData, _ := proto.Marshal(&header)
 
-	}
+	var MsgBob MessageBob
 
-	LastBlockSize := fsize % MAX_BLOCK_SIZE
-	if LastBlockSize == 0 {
-		return
-	}
-	block := make([]byte, LastBlockSize)
-	n, err := fp.ReadAt(block, int64((Blocks-1)*MAX_BLOCK_SIZE))
-	if err != nil {
-		return
-	}
-	if n > 0 {
-		fp.Write(block)
-	}
+	MsgBob.Head = headerData
+	MsgBob.Body = body
+	MsgBob.User = Self
 
-	msg := fmt.Sprintf("%s Sending a file named: '%s'! use '[filename]<<' to get it!", Self.Name, finfo.Name())
-
-	Msg := PacketMsgBob([]byte(msg), FILE_TIP_TYPE)
-	MsgBob := MessageBob{Msg, Self.IPPort}
-	MsgBob.Send()
-	return
+	return MsgBob
 }
 
-func openFile(fileName string) (os.File, error) {
-	tempDir := "/tmp/X-Chat-Tmp/"
-	if _, err := os.Stat(tempDir); err != nil && os.IsNotExist(err) {
-		os.Mkdir(tempDir, 0644)
-	}
-	fp, err := os.OpenFile(tempDir+fileName, os.O_APPEND|os.O_CREATE|os.O_TRUNC, 0644)
+func PackFileMsgBob(data []byte, fileName string) ([]byte, error) {
+	var fileMsgBob FileBody
+	fileMsgBob.FileName = fileName
+	fileMsgBob.Chunked = data
+
+	fileMsgData, err := proto.Marshal(&fileMsgBob)
 	if err != nil {
 		debugLog(err)
-		return *fp, err
+		return nil, err
 	}
-	return *fp, nil
+	return fileMsgData, nil
 }

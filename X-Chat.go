@@ -1,109 +1,104 @@
 /**
-* 参考 https://blog.csdn.net/kevinshq/article/details/8179252
-* https://my.oschina.net/90design/blog/1613047?hmsr=studygolang.com&utm_medium=studygolang.com
-* http://colobu.com/2016/10/19/Go-UDP-Programming/
-* https://www.jianshu.com/p/ddb68de3238b
+ ***************** X-Chat *******************
+ *
+ * link:x-chat.cc
+ *
+ ********************************************
  */
 
 package main
 
 import (
 	"bufio"
-	"flag"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"time"
 )
 
 var (
-	Self    User
-	Runtime RunTime
-	server  Server
-	client  Client
-	err     error
+	Self        USER
+	Runtime     runtime
+	Server      server
+	Client      client
+	err         error
+	MsgBobQueue chan MessageBob
+	FileRecv    chan int
 )
 
-func main() {
-	_init_()
-	createUser()
-	if Runtime.Mode == 0 {
-		err = server.BindAndListen()
-		if err != nil {
-			Log(err)
-			return
-		}
-		go TerminalInput()
-		go server.checkClientsIfAlive()
-		server.Accept()
-	} else {
-		err = client.Dial()
-		if err != nil {
-			Log(err)
-			return
-		}
-		defer client.Connected.Close()
-		go TerminalInput()
-		go client.beatHeart()
-		client.ReadMsg()
-	}
-}
+func init() {
 
-func _init_() {
-	var BindingPort string
-	var HOST string
-	var PORT string
-	if len(os.Args) < 2 {
-		fmt.Println("Usage:\n" + os.Args[0] + " -l [port] for server\n" + os.Args[0] + " [ip] [port] for client\n\ngithub: https://github.com/longmon/X-Chat.git")
-		os.Exit(1)
+	if len(os.Args) < 2 || os.Args[1] == "help" {
+		help()
+		os.Exit(-1)
 	}
-	if len(os.Args) >= 2 && os.Args[1] == "help" {
-		fmt.Println("Usage:\n" + os.Args[0] + " -l [port] for server\n" + os.Args[0] + " [ip] [port] for client\n\ngithub: https://github.com/longmon/X-Chat.git")
-		os.Exit(1)
-	}
-	flag.StringVar(&BindingPort, "l", "-1", "binding port of server")
-	flag.StringVar(&HOST, "h", "", "server host")
-	flag.StringVar(&PORT, "p", "", "server port")
-	flag.Parse()
-	if BindingPort != "-1" {
+
+	if len(os.Args) > 2 && os.Args[1] == "-l" {
+		BindingPort := os.Args[2]
+
 		//服务器角色
 		Runtime.Mode = 0
-		server.IP = net.IPv4zero
-		server.Port = BindingPort
-		server.Connects = make(map[string]Client, 1)
-		Self.Role = 0
+		Server.Addr = ":" + BindingPort
+		if err != nil {
+			debugLog(err)
+			os.Exit(1)
+		}
+		Server.Clients = make(map[string]client, 10)
+		MsgBobQueue = make(chan MessageBob, 64)
+
+		Self.IPPort = []byte(":" + BindingPort)
 	} else {
 		Runtime.Mode = 1
-		var args = flag.Args()
-		if HOST == "" && len(args) >= 1 {
-			HOST = args[0]
+		if len(os.Args) > 2 {
+			RemoteHost := os.Args[1]
+			RemotePort := os.Args[2]
+			Client.RemoteAddr = RemoteHost + ":" + RemotePort
 		}
-		if PORT == "" && len(args) >= 2 {
-			PORT = args[1]
-		}
-		client.RemoteAddr, err = net.ResolveTCPAddr("tcp", HOST+":"+PORT)
-		client.LastActive = time.Now().Unix()
-		if err != nil {
-			log.Fatalln(err)
-		}
-		Self.Role = 1
+		Client.LastAct = time.Now().Unix()
 	}
 	if Runtime.Mode != 0 && Runtime.Mode != 1 {
 		log.Fatalln("Rumtime error!")
+		os.Exit(-1)
+	}
+	os.Mkdir("./data", 0655)
+}
+
+func main() {
+
+	signup()
+
+	if Runtime.Mode == 0 {
+		readyToSaid()
+		go terminalInput()
+		go Server.BroadCast()
+		Server.bindAndListen()
+		Server.accept()
+	} else {
+		err = Client.Dial()
+		if err != nil {
+			debugLog(err)
+			os.Exit(-1)
+		}
+		sendAck(&(Client.Conn))
+		go Client.recvConnect()
+		terminalInput()
 	}
 }
 
-func createUser() {
+func help() {
+	fmt.Println("Usage:\n" + os.Args[0] + " -l [port] for server\n" + os.Args[0] + " [ip] [port] for client\n\nLink:https://x-chat.cc")
+}
+
+func signup() {
 	fmt.Printf("Type your name:")
-	rd := bufio.NewReader(os.Stdin)
-	line, _, err := rd.ReadLine()
+	Rd := bufio.NewReader(os.Stdin)
+	name, _, err := Rd.ReadLine()
 	if err != nil {
-		Log(err)
-		os.Exit(1)
+		debugLog(err)
+		os.Exit(-1)
 	}
-	Self.Name = string(line)
-	Self.IP = ":1"
-	fmt.Printf("\033[%dA\r", 1)
-	fmt.Printf("\n*********** \033[32mHello, \033[35m" + string(line) + "\033[32m! Thank you for using X-Chat!\033[37m**************\n")
+	Self.Name = name
+	Self.IPPort = []byte(":1")
+	fmt.Printf("\033[%dA\033[K", 1)
+	fmt.Printf("\n*********** \033[32mHello, \033[1m\033[36m\033[4m%s\033[0m\033[32m! Thank you for using X-Chat!\033[0m**************\n", name)
 }

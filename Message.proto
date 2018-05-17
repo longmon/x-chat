@@ -8,15 +8,15 @@ message USER{
 }
 
 message MsgHead{
-    uint32 Typ = 1;
-    uint32 BodyLen = 2;
-    uint32 Blocks = 3;
-    bytes  Hash = 4;
+    fixed32 Typ = 1;
+    fixed32 BodyLen = 2;
+    fixed32 Blocks = 3;
 }
 
 message MsgAck{
     bytes IPPort = 1;
-    uint32 ClientsNum = 2;
+    bytes Name = 2;
+    uint32 ClientsNum = 3;
 }
 
 message MsgBody{
@@ -27,6 +27,12 @@ message MsgBody{
 message FileBody{
     string FileName = 1;
     bytes Chunked = 2;
+}
+
+message FileM{
+    string FileName = 1;
+    string FileTempName = 2;
+    USER User = 3;
 }
 
 message MessageB{
