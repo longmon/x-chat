@@ -8,4 +8,10 @@
 
 #客户端连接服务器
 ./X-Chat [ip] [port]
+
+# 文件传输
+<< filename
+
+#文件接收
+>> filename
 ```
