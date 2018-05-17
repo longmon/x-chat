@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package main;
+
+message USER{
+    bytes Name = 1;
+    bytes IPPort = 2;
+}
+
+message MsgHead{
+    fixed32 Typ = 1;
+    fixed32 BodyLen = 2;
+    fixed32 Blocks = 3;
+}
+
+message MsgAck{
+    bytes IPPort = 1;
+    bytes Name = 2;
+    uint32 ClientsNum = 3;
+}
+
+message MsgBody{
+    USER   User = 1;
+    bytes  Payload = 2;
+}
+
+message FileBody{
+    string FileName = 1;
+    bytes Chunked = 2;
+}
+
+message FileM{
+    string FileName = 1;
+    string FileTempName = 2;
+    USER User = 3;
+}
+
+message MessageB{
+    bytes Head = 1;
+    bytes Body = 2;
+}
