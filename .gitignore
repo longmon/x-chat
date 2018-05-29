@@ -16,3 +16,4 @@
 tests/*
 X-Chat
 data/*
+vendor/
