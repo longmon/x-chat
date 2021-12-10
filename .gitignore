@@ -14,6 +14,7 @@
 .glide/
 
 tests/*
-X-Chat
 data/*
 vendor/
+x-chat
+.idea/
