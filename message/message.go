@@ -2,13 +2,13 @@ package message
 
 import (
 	"github.com/longmon/x-chat/user"
-	"time"
 	"github.com/ugorji/go/codec"
+	"time"
 )
 
 type Message struct {
-	From user.User
-	To user.User
+	From    user.User
+	To      user.User
 	Payload []byte
 	Ts time.Time
 }

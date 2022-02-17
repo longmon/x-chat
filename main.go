@@ -2,6 +2,10 @@ package main
 
 import (
 	"fmt"
+	"github.com/longmon/x-chat/cmd"
+	"github.com/longmon/x-chat/network/client"
+	"github.com/longmon/x-chat/network/server"
+	"github.com/longmon/x-chat/user"
 	"log"
 	"net"
 	"os"
@@ -21,6 +25,13 @@ func main() {
 	if os.Args[1] == "-s" {
 		mode = RunModeAsServer
 		srvListenAddr = os.Args[2]
+
+		chatSrv := server.NewChatServer(srvListenAddr)
+		go chatSrv.ListenAndAccept()
+
+
+		cmd.ListenCmdInput()
+
 	} else {
 		mode = RunModeAsClient
 		ip, err := net.ResolveIPAddr("ip4", os.Args[1])
@@ -31,7 +42,13 @@ func main() {
 		if err != nil {
 			log.Fatalln(err)
 		}
-		log.Println(ip, port)
+		cc, err := client.Dial(ip.String(), port)
+		if err != nil {
+			log.Fatalln(err)
+		}
+		log.Printf("%#v", cc)
+		user.RegisterUser()
+		cmd.ListenCmdInput()
 	}
 }
 

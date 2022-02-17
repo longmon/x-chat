@@ -1,10 +1,15 @@
 package user
 
-import "net"
+import (
+	"net"
+)
 
-type Client struct {
-	UUID string
+type ClientDevice struct {
+	UUID       string
 	RemoteAddr string
 	TCPConn net.Conn
-	User User
+}
+
+type TCPClient struct {
+
 }
